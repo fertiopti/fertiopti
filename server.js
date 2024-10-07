@@ -8,7 +8,6 @@ const path = require("path");
 const nodemailer = require('nodemailer');
 const cron = require('node-cron');
 const { MongoClient } = require('mongodb');
-const mysql = require('mysql');
 dotenv.config();
 
 const app = express();
@@ -33,7 +32,7 @@ app.get("/server_status", (req, res) => {
 });
 
 app.get("/dbcheck", (req, res) => {
-  if (dbconn) {
+  if (mongoClient) {
     res.status(200);
     res.send("DB UP");
   }
@@ -82,32 +81,6 @@ const sendEmail = (email, message) => {
   });
 };
 
-// MySQL connection setup using pool
-const dbconn = mysql.createPool({
-  connectionLimit: 10,  // Set a limit for multiple connections
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,  // Ensure the password is set correctly
-  database: process.env.DB_NAME,
-  port: process.env.DB_PORT || 25060,
-});
-
-// Establishing MySQL connection and handling errors
-dbconn.getConnection((err, connection) => {
-  if (err) {
-    console.error('Error connecting to the MySQL database:', err);
-    return;
-  }
-  console.log('Connected to the MySQL database.');
-  connection.release();  // Release the connection back to the pool
-});
-
-// Handling MySQL pool errors
-dbconn.on('error', (err) => {
-  console.error('MySQL Database connection error:', err);
-});
-
-
 // MongoDB client setup
 const mongoClient = new MongoClient(process.env.MONGODB_URI);
 mongoClient.connect().then(() => {
@@ -115,44 +88,38 @@ mongoClient.connect().then(() => {
 });
 
 // CRON job to check soil moisture and send alerts
-cron.schedule('*/30 * * * *', async () => {  // Every 10 minutes
+cron.schedule('*/30 * * * *', async () => {  // Every 30 minutes
   try {
     const db = mongoClient.db("smart_agriculture");
     const sensorCollection = db.collection("sensor_data");
-    
+    const userCollection = db.collection("user_data");
+
     // Get latest sensor data from MongoDB
     const sensorData = await sensorCollection.find().sort({ timestamp: -1 }).limit(1).toArray();
     if (!sensorData.length) return;
 
     const soilMoisture = sensorData[0].soil_moisture;
     
-    // Query MySQL for active email alerts
-    const query = `SELECT email FROM user_consumer WHERE email_alert = 'active'`;
-    dbconn.query(query, async (err, results) => {
-      if (err) {
-        console.error('Error querying MySQL:', err.stack);
-        return;
-      }
-      
-      if (results.length > 0) {
-        const emailList = results.map(row => row.email);
-        
-        let alertMessage = '';
-        if (soilMoisture < 100) {
-          alertMessage = `Water Clogging Alert: Soil moisture level is ${soilMoisture}. Immediate action needed.`;
-        } else if (soilMoisture > 750) {
-          alertMessage = `Soil Dryness Alert: Soil moisture level is ${soilMoisture}. Please water the soil.`;
-        }
-        
-        if (alertMessage) {
-          emailList.forEach(email => {
-            sendEmail(email, alertMessage)
-              .then(response => console.log(`Email sent to ${email}: ${response}`))
-              .catch(error => console.error('Error sending email:', error));
-          });
-        }
-      }
-    });
+    // Query MongoDB for users with active email alerts
+    const usersWithAlerts = await userCollection.find({ email_alert: 'active' }).toArray();
+    if (!usersWithAlerts.length) return;
+
+    const emailList = usersWithAlerts.map(user => user.email);
+    
+    let alertMessage = '';
+    if (soilMoisture < 100) {
+      alertMessage = `Water Clogging Alert: Soil moisture level is ${soilMoisture}. Immediate action needed.`;
+    } else if (soilMoisture > 750) {
+      alertMessage = `Soil Dryness Alert: Soil moisture level is ${soilMoisture}. Please water the soil.`;
+    }
+    
+    if (alertMessage) {
+      emailList.forEach(email => {
+        sendEmail(email, alertMessage)
+          .then(response => console.log(`Email sent to ${email}: ${response}`))
+          .catch(error => console.error('Error sending email:', error));
+      });
+    }
   } catch (error) {
     console.error('Error in CRON job:', error);
   }

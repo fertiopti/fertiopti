@@ -1,77 +1,86 @@
 "use strict";
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
-const { pool } = require("../../config/db.config");
+const { mongoClient } = require("../../config/db.config");
+const { ObjectId } = require('mongodb');
+
+const dbName = process.env.MONGODB_NAME;
+const collectionName = 'user_data';
 
 const Auth = {
   createUser: async (name, email, phone, password) => {
     const hashedPassword = await bcrypt.hash(password, 10);
     const status = "active"; // or set to your desired default status
     const role = "user";
+    const emailAlert = "active";
 
-    const query =
-      "INSERT INTO user_consumer (name, email, phone, password, status, role) VALUES (?, ?, ?, ?, ?, ?)";
-    const values = [name, email, phone, hashedPassword, status, role];
-    return new Promise((resolve, reject) => {
-      pool.query(query, values, (err, result) => {
-        if (err) reject(err);
-        console.log(result);
-        resolve({ userId: result.insertId, email, name });
-      });
-    });
+    const user = {
+      name,
+      email,
+      phone,
+      password: hashedPassword,
+      status,
+      role,
+      emailAlert,
+      email_verification: false, // Assuming email verification is initially false
+      deleted_at: null, // Assuming deleted_at field is used
+    };
+
+    try {
+      const db = mongoClient.db(dbName); // Replace with your MongoDB database name
+      const result = await db.collection(collectionName).insertOne(user);
+      return { userId: result.insertedId, email, name };
+    } catch (err) {
+      throw new Error(`Error creating user: ${err.message}`);
+    }
   },
 
   loginUser: async (email, password) => {
-    const query =
-      "SELECT id,name,password,status,phone,role FROM user_consumer WHERE email = ? AND deleted_at IS NULL";
-    const values = [email];
-
-    return new Promise((resolve, reject) => {
-      pool.query(query, values, async (err, result) => {
-        if (err) {
-          reject(err);
-        } else if (result.length === 0 || result[0].deleted_at == 1) {
-          resolve(null); // User not found
-        } else {
-          const match = await bcrypt.compare(password, result[0].password);
-          if (match) {
-            resolve(result[0]); // Successful login
-          } else {
-            resolve(null); // Incorrect password
-          }
-        }
+    try {
+      const db = mongoClient.db(dbName);
+      const user = await db.collection(collectionName).findOne({
+        email,
+        deleted_at: null, // Ensure that the user is not marked as deleted
       });
-    });
+
+      if (!user) {
+        return null; // User not found
+      }
+
+      const match = await bcrypt.compare(password, user.password);
+      if (match) {
+        return user; // Successful login
+      } else {
+        return null; // Incorrect password
+      }
+    } catch (err) {
+      throw new Error(`Error logging in user: ${err.message}`);
+    }
   },
 
-  checkUserExists: (email, phone) => {
-    const query = "SELECT id FROM user_consumer WHERE email = ? OR phone = ?";
-    const values = [email, phone];
-
-    return new Promise((resolve, reject) => {
-      pool.query(query, values, (err, result) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(result && result.length > 0);
-        }
+  checkUserExists: async (email, phone) => {
+    try {
+      const db = mongoClient.db(dbName);
+      const user = await db.collection(collectionName).findOne({
+        $or: [{ email }, { phone }],
       });
-    });
+      return !!user; // Return true if user exists, false otherwise
+    } catch (err) {
+      throw new Error(`Error checking if user exists: ${err.message}`);
+    }
   },
 
-  checkUserVerified: (email) => {
-    const query = "SELECT id FROM user_consumer WHERE email_verification = 1 and email = ?";
-    const values = [email];
-
-    return new Promise((resolve, reject) => {
-      pool.query(query, values, (err, result) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(result && result.length > 0);
-        }
+  checkUserVerified: async (email) => {
+    try {
+      const db = mongoClient.db(dbName);
+      const user = await db.collection(collectionName).findOne({
+        email,
+        email_verification: true, // Check if email is verified
       });
-    });
+      return !!user; // Return true if verified, false otherwise
+    } catch (err) {
+      throw new Error(`Error checking email verification: ${err.message}`);
+    }
   },
 
   generateJWT: (userId, email, name, role) => {
@@ -82,19 +91,16 @@ const Auth = {
     return token;
   },
 
-  updateEmailVerification: (email) => {
-    const query = "UPDATE user_consumer SET email_verification = 1 WHERE email =?";
-    const values = [email];
-
-    return new Promise((resolve, reject) => {
-      pool.query(query, values, (err, result) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve();
-        }
-      });
-    });
+  updateEmailVerification: async (email) => {
+    try {
+      const db = mongoClient.db(dbName);
+      await db.collection(collectionName).updateOne(
+        { email },
+        { $set: { email_verification: true } }
+      );
+    } catch (err) {
+      throw new Error(`Error updating email verification: ${err.message}`);
+    }
   },
 };
 
